@@ -407,6 +407,66 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .diff-line.del { background: var(--danger-soft); color: var(--danger); }
 .diff-line .mark { margin-right: 8px; font-weight: 700; }
 
+/* ---------- 函数调用图 ---------- */
+.cg-wrap {
+  position: relative; height: 520px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background:
+    radial-gradient(circle, var(--border) 1px, transparent 1px);
+  background-size: 22px 22px; background-color: var(--surface);
+  cursor: grab;
+}
+.cg-wrap.grabbing { cursor: grabbing; }
+.cg-svg { width: 100%; height: 100%; display: block; touch-action: none; }
+.cg-edge { fill: none; stroke: var(--border-strong); stroke-width: 1.6; }
+.cg-edge.builtin { stroke: var(--success); stroke-dasharray: 5 4; opacity: .85; }
+.cg-edge.dim { opacity: .12; }
+.cg-edge.hl { stroke: var(--primary); stroke-width: 2.6; }
+.cg-edge.hl.builtin { stroke: var(--success); }
+.cg-edge.self { stroke: var(--warning); }
+.cg-edge.self.hl { stroke: var(--warning); stroke-width: 2.6; }
+.cg-edge-label { fill: var(--text-muted); font-size: 10px; font-family: var(--mono); pointer-events: none; }
+.cg-node rect {
+  stroke-width: 1.6; rx: 8; ry: 8;
+  filter: drop-shadow(0 1px 2px rgba(16, 24, 40, .18));
+  cursor: pointer;
+}
+.cg-node text { font-family: var(--mono); pointer-events: none; dominant-baseline: middle; }
+.cg-node .nm { font-size: 12.5px; font-weight: 600; }
+.cg-node .sub { font-size: 10px; }
+.cg-node.user rect { fill: var(--primary-soft); stroke: var(--primary); }
+.cg-node.user text { fill: var(--primary); }
+.cg-node.user.uncalled rect { fill: var(--danger-soft); stroke: var(--danger); stroke-dasharray: 5 3; }
+.cg-node.user.uncalled text { fill: var(--danger); }
+.cg-node.user.recursive rect { stroke-width: 2.6; }
+.cg-node.builtin rect { fill: var(--success-soft); stroke: var(--success); }
+.cg-node.builtin text { fill: var(--success); }
+.cg-node.main rect { fill: var(--surface-2); stroke: var(--text-muted); }
+.cg-node.main text { fill: var(--text-muted); }
+.cg-node.dim { opacity: .18; }
+.cg-node.hl rect { stroke-width: 3px; }
+.cg-node.dragging rect { stroke: var(--accent); }
+.cg-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--text-muted); align-items: center; }
+.cg-legend .sw { display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: -2px; margin-right: 5px; border: 1.6px solid; }
+.cg-legend .sw.user { background: var(--primary-soft); border-color: var(--primary); }
+.cg-legend .sw.uncalled { background: var(--danger-soft); border-color: var(--danger); }
+.cg-legend .sw.builtin { background: var(--success-soft); border-color: var(--success); }
+.cg-legend .sw.main { background: var(--surface-2); border-color: var(--text-muted); }
+.cg-legend .ln { display: inline-block; width: 22px; height: 0; border-top: 2px solid var(--warning); vertical-align: 3px; margin-right: 5px; }
+.cg-legend .ln.bi { border-top: 2px dashed var(--success); }
+.cg-detail {
+  position: absolute; right: 12px; top: 12px; width: 250px; max-width: 72%;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); padding: 12px 14px; font-size: 12.5px; display: none;
+}
+.cg-detail.open { display: block; }
+.cg-detail .t { font-family: var(--mono); font-weight: 700; font-size: 14px; margin-bottom: 4px; word-break: break-all; }
+.cg-detail .row { display: flex; gap: 6px; color: var(--text-muted); margin-top: 3px; flex-wrap: wrap; }
+.cg-detail .sites { margin-top: 8px; max-height: 160px; overflow-y: auto; }
+.cg-detail .sites .st { font-family: var(--mono); font-size: 11.5px; padding: 2px 0; color: var(--text-muted); }
+.cg-toolbar { position: absolute; left: 12px; top: 12px; display: flex; gap: 6px; z-index: 5; }
+.cg-hint { position: absolute; left: 12px; bottom: 10px; font-size: 11px; color: var(--text-faint); pointer-events: none; }
+
 /* ---------- 杂项 ---------- */
 .flex { display: flex; gap: 10px; align-items: center; }
 .flex.wrap { flex-wrap: wrap; }

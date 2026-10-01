@@ -18,6 +18,7 @@ from . import lexer as lexer_mod
 from . import parser as parser_mod
 from . import semantic as semantic_mod
 from . import codegen as codegen_mod
+from . import callgraph as callgraph_mod
 from . import diagnostics as diag
 
 
@@ -28,6 +29,7 @@ class CompileResult:
         self.tokens = []
         self.ast = None
         self.symbol_table = None
+        self.call_graph = None
         self.bytecode = None
         self.diagnostics = diag.DiagnosticBag()
         self.stage = "idle"     # idle -> lexed -> parsed -> analyzed -> compiled
@@ -43,6 +45,7 @@ class CompileResult:
             "token_count": len(self.tokens) + 1,
             "has_ast": self.ast is not None,
             "has_symbols": self.symbol_table is not None,
+            "has_callgraph": self.call_graph is not None,
             "has_bytecode": self.ast is not None,
         }
         if include_source:
@@ -86,6 +89,8 @@ def compile_source(source: str, stop_on_error=True) -> CompileResult:
     analyzer.set_source(source)
     analyzer.analyze(ast)
     result.symbol_table = analyzer.symbols
+    # 函数调用图：基于语义分析对调用目标的作用域解析结果构建
+    result.call_graph = callgraph_mod.build_call_graph(ast, analyzer)
     result.diagnostics.items.extend(analyzer.diagnostics.items)
     result.stage = "analyzed"
     _enrich_diagnostics(result.diagnostics, lines)

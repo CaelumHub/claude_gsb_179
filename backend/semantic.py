@@ -45,9 +45,15 @@ class SemanticAnalyzer:
         self.diagnostics = DiagnosticBag()
         self.symbols = sym.SymbolTable()
         self.current_scope = self.symbols.global_scope
-        self.current_function = None
+        # 函数栈：顶层语句执行时为空；嵌套函数里栈底是外层函数。
+        # 调用边据此归属到"实际包含调用点的函数"（或 <main> 顶层代码）。
+        self.function_stack = []
         self.loop_depth = 0
         self.source_lines = []
+        # 调用点记录（基于作用域解析结果，供"函数调用图"页面建图）：
+        # 每条为 {caller, target, kind, name, line, column, synthetic}
+        #   kind: function / builtin / undefined / not_callable / indirect
+        self.call_sites = []
         self._builtin_symbols = self._declare_builtins()
 
     def _declare_builtins(self):
@@ -108,9 +114,11 @@ class SemanticAnalyzer:
         return s
 
     def _analyze_function(self, fn: ast.FunctionDecl):
-        self.current_function = fn
-        self._with_scope(sym.SCOPE_FUNCTION, fn.name, lambda: self._function_body(fn))
-        self.current_function = None
+        self.function_stack.append(fn)
+        try:
+            self._with_scope(sym.SCOPE_FUNCTION, fn.name, lambda: self._function_body(fn))
+        finally:
+            self.function_stack.pop()
 
     def _function_body(self, fn: ast.FunctionDecl):
         # 形参
@@ -150,6 +158,10 @@ class SemanticAnalyzer:
         elif isinstance(stmt, ast.PrintStmt):
             for a in stmt.args:
                 self._expr(a)
+            # print 语句等价于对内置 print(...) 的调用（codegen 里也是这样翻译的）
+            self._record_call(
+                target="print", kind=sym.KIND_BUILTIN, name="print",
+                line=stmt.line, column=stmt.column, synthetic=True)
         elif isinstance(stmt, ast.IfStmt):
             for cond, body in stmt.branches:
                 self._expr(cond)
@@ -303,6 +315,23 @@ class SemanticAnalyzer:
             e.expr_type = sym.TYPE_UNKNOWN
         return e.expr_type
 
+    def _current_caller(self):
+        """调用点所在的函数名；顶层语句归到虚拟的 <main>。"""
+        return self.function_stack[0].name if self.function_stack else "<main>"
+
+    def _record_call(self, target, kind, name, line, column, synthetic=False):
+        """记录一条已按作用域解析的调用点（target 为符号绑定的真实名字，
+        从而遮蔽/同名不会连错）。"""
+        self.call_sites.append({
+            "caller": self._current_caller(),
+            "target": target,      # 解析到的符号名；无法解析时为源码里写的名字
+            "kind": kind,          # function / builtin / undefined / not_callable / indirect
+            "name": name,          # 调用处源码文本
+            "line": line,
+            "column": column,
+            "synthetic": synthetic,
+        })
+
     def _call(self, e: ast.CallExpr):
         # 实参类型
         for a in e.args:
@@ -315,6 +344,9 @@ class SemanticAnalyzer:
                     name, self.symbols.collect_names(sym.KIND_BUILTIN), e.callee.line,
                     e.callee.column, self._line(e.callee)))
                 e.expr_type = sym.TYPE_UNKNOWN
+                self._record_call(
+                    target=name, kind="undefined", name=name,
+                    line=e.line, column=e.column)
                 return e.expr_type
             s.references += 1
             e.callee.symbol = s
@@ -325,6 +357,9 @@ class SemanticAnalyzer:
                     self.diagnostics.add(semantic_wrong_arity(
                         name, sig, len(e.args), e.line, e.column, self._line(e)))
                 e.expr_type = sym.TYPE_UNKNOWN  # 内置函数返回类型视函数而定
+                self._record_call(
+                    target=s.name, kind=sym.KIND_BUILTIN, name=name,
+                    line=e.line, column=e.column)
                 return e.expr_type
             if s.kind == sym.KIND_FUNCTION:
                 arity = getattr(s, "arity", None)
@@ -332,9 +367,20 @@ class SemanticAnalyzer:
                     self.diagnostics.add(semantic_wrong_arity(
                         name, arity, len(e.args), e.line, e.column, self._line(e)))
                 e.expr_type = sym.TYPE_UNKNOWN
+                self._record_call(
+                    target=s.name, kind=sym.KIND_FUNCTION, name=name,
+                    line=e.line, column=e.column)
                 return e.expr_type
-        # 非标识符调用（如闭包/高阶），保守处理
-        self._expr(e.callee)
+            # 名字解析到的是变量/形参而非可调用对象（如被同名变量遮蔽）
+            self._record_call(
+                target=s.name, kind="not_callable", name=name,
+                line=e.line, column=e.column)
+        else:
+            # 非标识符调用（如 f(...)() / 返回值调用），目标无法静态确定
+            self._expr(e.callee)
+            self._record_call(
+                target=None, kind="indirect", name=None,
+                line=e.line, column=e.column)
         e.expr_type = sym.TYPE_UNKNOWN
         return e.expr_type
 

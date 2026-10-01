@@ -234,7 +234,7 @@ class Service:
         return result
 
     def compile_view(self, source, detail="all"):
-        """供前端页面渲染的编译结果（token/ast/symbols/bytecode 按需返回）。"""
+        """供前端页面渲染的编译结果（token/ast/symbols/callgraph/bytecode 按需返回）。"""
         result = compiler_mod.compile_source(source)
         view = result.to_dict()
         if "tokens" in detail or detail == "all":
@@ -244,6 +244,8 @@ class Service:
             view["ast"] = result.ast.to_dict()
         if detail == "all" and result.symbol_table is not None:
             view["symbols"] = result.symbol_table.to_dict()
+        if ("callgraph" in detail or detail == "all") and result.call_graph is not None:
+            view["callgraph"] = result.call_graph
         if detail == "all" and result.bytecode is not None:
             view["bytecode"] = result.bytecode.to_dict()
             view["bytecode"]["functions"].reverse()

@@ -45,6 +45,7 @@ def run_all():
     _test_lexer()
     _test_parser()
     _test_semantic()
+    _test_callgraph()
     _test_vm_basic()
     _test_functions_recursion()
     _test_control_flow()
@@ -98,6 +99,45 @@ def _test_semantic():
     ok2 = any("2 个参数" in e.message or "需要 2" in e.message for e in errs2)
     _check("语义分析：参数个数不匹配报错", ok2,
            str([e.message for e in errs2]) if not ok2 else "")
+
+
+def _test_callgraph():
+    from . import callgraph as cg_mod
+    src = (
+        "func fib(n) { if (n < 2) { return n; } return fib(n-1) + fib(n-2); }\n"
+        "func a() { b(); }\n"
+        "func b() { a(); }\n"
+        "func dead() { return 1; }\n"
+        "func sh() { var fib = 1; return fib(2); }\n"
+        "print(fib(5));\n"
+    )
+    res = compiler.compile_source(src)
+    cg = res.call_graph
+    assert cg is not None
+    by_id = {n["id"]: n for n in cg["nodes"]}
+    # 自环：fib -> fib（两次调用合并为一条边，count=2）
+    fib_self = [e for e in cg["edges"] if e["source"] == "fib" and e["target"] == "fib"]
+    ok1 = bool(fib_self) and fib_self[0]["count"] == 2 and by_id["fib"]["recursive"]
+    _check("调用图：直接递归自环（合并多次调用）", ok1,
+           str([(e["source"], e["target"], e["count"]) for e in cg["edges"]]) if not ok1 else "")
+    # 间接递归：a <-> b
+    groups = {tuple(sorted(g["members"])): g["kind"] for g in cg["recursive_groups"]}
+    ok2 = groups.get(("a", "b")) == "mutual"
+    _check("调用图：间接递归强连通分量", ok2, str(groups) if not ok2 else "")
+    # 从未被调用：dead / sh（<main> 入口不计入）
+    ok3 = set(cg["uncalled"]) == {"dead", "sh"} and by_id["dead"]["indegree"] == 0
+    _check("调用图：标记从未被调用的函数", ok3, str(cg["uncalled"]) if not ok3 else "")
+    # 遮蔽：sh() 里 fib(2) 解析到局部变量，不得连到全局函数 fib
+    bad = [e for e in cg["edges"] if e["source"] == "sh" and e["target"] == "fib"]
+    un = {(u["caller"], u["kind"], u["name"]) for u in cg["unresolved"]}
+    ok4 = not bad and ("sh", "not_callable", "fib") in un
+    _check("调用图：遮蔽名字不误连（not_callable 入未解析）", ok4,
+           f"bad={bad}, unresolved={un}" if not ok4 else "")
+    # 内置函数：print 语句产生到内置 print 的合成边
+    ok5 = by_id.get("print", {}).get("kind") == "builtin"
+    pe = [e for e in cg["edges"] if e["target"] == "print"]
+    ok5 = ok5 and bool(pe) and pe[0]["kind"] == "builtin" and pe[0]["sites"][0]["synthetic"]
+    _check("调用图：区分内置函数（print 语句合成调用边）", ok5, str(pe) if not ok5 else "")
 
 
 def _test_vm_basic():

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>函数调用图 · MiniLang 平台</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main">
+    <header class="topbar" id="topbar"></header>
+    <div class="content">
+      <div class="flex wrap between mb">
+        <div class="flex wrap" style="gap:8px">
+          <select id="sample"></select>
+          <button class="btn sm" id="btn-loadproj">📂 载入项目源码</button>
+        </div>
+        <button class="btn primary" id="btn-build">🕸️ 生成调用图</button>
+      </div>
+
+      <div id="editor"></div>
+
+      <div class="card mt">
+        <div class="flex wrap between">
+          <h2>函数调用图</h2>
+          <div class="flex wrap" style="gap:12px">
+            <label class="flex" style="gap:5px;font-size:12px;color:var(--text-muted)">
+              <input type="checkbox" id="chk-builtins" checked> 显示内置函数
+            </label>
+            <label class="flex" style="gap:5px;font-size:12px;color:var(--text-muted)">
+              <input type="checkbox" id="chk-labels" checked> 调用次数
+            </label>
+            <button class="btn sm" id="btn-relayout">🔀 重新布局</button>
+          </div>
+        </div>
+        <div class="desc">
+          调用边来自语义分析阶段对调用目标的作用域解析（非按名字匹配），同名或被局部变量 / 形参遮蔽的名字不会连错。
+          虚线红框 = 从未被调用的函数；绿色节点 = 内置函数；自环 = 直接递归；加粗描边 = 参与递归（含间接递归）。
+        </div>
+        <div id="cg-stats" class="muted mb" style="font-size:12px"></div>
+
+        <div class="cg-wrap" id="cg-wrap">
+          <div class="cg-toolbar">
+            <button class="btn sm" id="btn-zoom-in" title="放大">＋</button>
+            <button class="btn sm" id="btn-zoom-out" title="缩小">－</button>
+            <button class="btn sm" id="btn-zoom-fit" title="适合窗口">⛶</button>
+          </div>
+          <svg id="cg-svg" class="cg-svg" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <marker id="cg-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                      markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--border-strong)"></path>
+              </marker>
+              <marker id="cg-arrow-primary" viewBox="0 0 10 10" refX="9" refY="5"
+                      markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--primary)"></path>
+              </marker>
+              <marker id="cg-arrow-success" viewBox="0 0 10 10" refX="9" refY="5"
+                      markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--success)"></path>
+              </marker>
+              <marker id="cg-arrow-warning" viewBox="0 0 10 10" refX="9" refY="5"
+                      markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--warning)"></path>
+              </marker>
+            </defs>
+            <g id="cg-viewport"></g>
+          </svg>
+          <div class="cg-detail" id="cg-detail"></div>
+          <div class="cg-hint">滚轮缩放 · 拖空白处平移 · 拖节点重排 · 点节点查看调用点</div>
+        </div>
+
+        <div class="cg-legend mt">
+          <span><span class="sw user"></span>用户函数</span>
+          <span><span class="sw uncalled"></span>从未被调用</span>
+          <span><span class="sw builtin"></span>内置函数</span>
+          <span><span class="sw main"></span>&lt;main&gt; 顶层入口</span>
+          <span><span class="ln"></span>递归自环</span>
+          <span><span class="ln bi"></span>内置调用</span>
+        </div>
+      </div>
+
+      <div class="grid cols-2">
+        <div class="card">
+          <h2>🚫 从未被调用的函数</h2>
+          <div class="desc">入度为 0 的用户函数（&lt;main&gt; 是程序入口，不计入）。可能是死代码或遗漏了调用。</div>
+          <div id="cg-uncalled"></div>
+        </div>
+        <div class="card">
+          <h2>🔁 递归与无法解析的调用</h2>
+          <div class="desc">直接递归（自环）、间接递归（互相调用成环），以及无法静态连成边的调用点。</div>
+          <div id="cg-notes"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="js/common.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/callgraph.js"></script>
+</body>
+</html>
