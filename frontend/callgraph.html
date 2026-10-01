@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>函数调用图 · MiniLang 平台</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main">
+    <header class="topbar" id="topbar"></header>
+    <div class="content">
+      <div class="flex wrap between mb">
+        <div class="flex wrap" style="gap:8px">
+          <select id="sample"></select>
+          <button class="btn sm" id="btn-loadproj">📂 载入项目源码</button>
+        </div>
+        <button class="btn primary" id="btn-build">🕸️ 生成调用图</button>
+      </div>
+
+      <div id="editor"></div>
+
+      <div class="card mt">
+        <div class="flex between wrap" style="gap:8px">
+          <h2>函数调用图</h2>
+          <div id="cg-stats" class="muted" style="font-size:12px"></div>
+        </div>
+        <div class="desc">
+          调用边基于语义分析阶段对调用目标的解析结果生成（而非按名字文本猜测），因此同名变量/形参遮蔽不会连错；
+          <span class="badge red" style="font-size:10px">自环</span> 表示直接递归，
+          <span class="badge amber" style="font-size:10px">环边</span> 表示间接递归，
+          红框虚线节点为<span style="color:var(--danger)">从未被调用</span>的用户函数。
+        </div>
+
+        <div class="flex wrap" style="gap:14px;margin-bottom:8px;font-size:12.5px" id="cg-filters">
+          <label class="cg-chk"><input type="checkbox" id="f-builtin" checked> 显示内置函数</label>
+          <label class="cg-chk"><input type="checkbox" id="f-main" checked> 显示顶层入口</label>
+          <label class="cg-chk"><input type="checkbox" id="f-uncalled" checked> 高亮未调用函数</label>
+          <span class="spacer" style="flex:1"></span>
+          <div class="cg-legend">
+            <span><i class="lg-dot user"></i>用户函数</span>
+            <span><i class="lg-dot builtin"></i>内置函数</span>
+            <span><i class="lg-dot main"></i>顶层入口</span>
+            <span><i class="lg-dot uncalled"></i>未被调用</span>
+          </div>
+        </div>
+
+        <div id="cg-wrap" class="cg-wrap">
+          <svg id="cg-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+          <div class="cg-zoom">
+            <button class="btn sm" id="zoom-in" title="放大">＋</button>
+            <button class="btn sm" id="zoom-out" title="缩小">－</button>
+            <button class="btn sm" id="zoom-fit" title="适应画布">适配</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2 mt" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card">
+          <h2>函数节点 <span id="node-count" class="muted" style="font-size:12px"></span></h2>
+          <div id="cg-nodes" class="cg-node-list"></div>
+        </div>
+        <div class="card">
+          <h2>调用点 / 未解析调用</h2>
+          <div id="cg-detail" class="cg-detail muted">点击图中的函数节点，查看它的出边与每个调用点位置。</div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="js/common.js"></script>
+<script src="js/editor.js"></script>
+<script>
+(function () {
+  ML.Shell.render("callgraph");
+  ML.Shell.setTitle("函数调用图");
+
+  const editor = new ML.CodeEditor(document.getElementById("editor"), {
+    value: ML.store.get("draft_source", ML.DEFAULT_CODE), height: 220,
+  });
+  editor.onValueChange = ML.debounce(() => ML.store.set("draft_source", editor.getValue()), 200);
+
+  const sampleSel = document.getElementById("sample");
+  sampleSel.innerHTML = '<option value="">— 载入示例 —</option>' +
+    ML.SAMPLES.map((s, i) => `<option value="${i}">${ML.escapeHtml(s.name)}</option>`).join("");
+  sampleSel.onchange = () => {
+    if (sampleSel.value === "") return;
+    editor.setValue(ML.SAMPLES[+sampleSel.value].code);
+    sampleSel.value = "";
+  };
+  document.getElementById("btn-loadproj").onclick = async () => editor.setValue(await ML.Shell.loadSource(ML.DEFAULT_CODE));
+
+  const esc = ML.escapeHtml;
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const svg = document.getElementById("cg-svg");
+  const wrap = document.getElementById("cg-wrap");
+
+  let graph = null;            // 后端返回的完整图
+  let view = { nodes: [], edges: [], byId: new Map() };  // 经筛选后的视图
+  let currentPos = null;       // 当前布局坐标（拖拽时实时更新）
+  let edgeLayerEl = null;
+  let selectedId = null;
+  const camera = { x: 0, y: 0, k: 1 };
+
+  const R = { user: 27, builtin: 21, main: 22 };
+  const KIND_LABEL = { user: "用户函数", builtin: "内置函数", main: "顶层入口" };
+
+  /* ------------------------------------------------------------
+   * 取数
+   * ------------------------------------------------------------ */
+  document.getElementById("btn-build").onclick = build;
+
+  async function build() {
+    const code = editor.getValue();
+    const data = await ML.api.callGraph(code);
+    const g = data.graph;
+    if (!g || !g.ok) {
+      const stage = { lexed: "词法", parsed: "语法" }[g && g.stage] || "";
+      document.getElementById("cg-stats").textContent = "";
+      svg.innerHTML = "";
+      document.getElementById("cg-nodes").innerHTML = "";
+      document.getElementById("cg-detail").innerHTML =
+        `<div class="empty"><div class="big">🚫</div>${stage}阶段未通过，无法生成调用图。<br>` +
+        `<a href="diagnostics.html">前往诊断页查看错误</a></div>`;
+      graph = null;
+      return;
+    }
+    graph = g;
+    selectedId = null;
+    layoutAndRender();
+  }
+
+  /* ------------------------------------------------------------
+   * 筛选
+   * ------------------------------------------------------------ */
+  function applyFilters() {
+    if (!graph) return;
+    const showBuiltin = document.getElementById("f-builtin").checked;
+    const showMain = document.getElementById("f-main").checked;
+    const nodes = graph.nodes.filter((n) =>
+      (n.kind !== "builtin" || showBuiltin) && (n.kind !== "main" || showMain));
+    const ids = new Set(nodes.map((n) => n.id));
+    const edges = graph.edges.filter((e) => ids.has(e.source) && ids.has(e.target));
+    view = { nodes, edges, byId: new Map(nodes.map((n) => [n.id, n])) };
+  }
+
+  document.getElementById("cg-filters").addEventListener("change", () => {
+    if (graph) layoutAndRender();
+  });
+
+  /* ------------------------------------------------------------
+   * 力导向布局（纯手写，无第三方依赖）
+   * ------------------------------------------------------------ */
+  function simulate() {
+    const W = Math.max(wrap.clientWidth, 320);
+    const H = 520;
+    const pos = new Map();
+    // 初始：圆环均布；内置固定在右列，<main> 在左上
+    const users = view.nodes.filter((n) => n.kind === "user");
+    users.forEach((n, i) => {
+      const a = (i / Math.max(users.length, 1)) * Math.PI * 2 - Math.PI / 2;
+      pos.set(n.id, {
+        x: W / 2 + Math.cos(a) * 170,
+        y: H / 2 + Math.sin(a) * 150,
+        vx: 0, vy: 0,
+        fx: n.kind === "user" ? null : 0, fy: null,
+      });
+    });
+    view.nodes.filter((n) => n.kind !== "user").forEach((n, i, arr) => {
+      if (n.kind === "builtin") {
+        pos.set(n.id, { x: W - 80, y: 70 + i * 64, vx: 0, vy: 0, fx: W - 80, fy: 70 + i * 64 });
+      } else {
+        pos.set(n.id, { x: 80, y: 70, vx: 0, vy: 0, fx: 80, fy: 70 });
+      }
+    });
+
+    const REP = 5200, SPRING = 0.012, LEN = 120, GRAV = 0.006;
+    for (let tick = 0; tick < 320; tick++) {
+      const ids = [...pos.keys()];
+      // 斥力
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          const a = pos.get(ids[i]), b = pos.get(ids[j]);
+          let dx = a.x - b.x, dy = a.y - b.y;
+          let d2 = dx * dx + dy * dy;
+          if (d2 < 0.01) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 0.01; }
+          const d = Math.sqrt(d2);
+          const f = REP / d2;
+          const ux = dx / d, uy = dy / d;
+          a.vx += ux * f; a.vy += uy * f;
+          b.vx -= ux * f; b.vy -= uy * f;
+        }
+      }
+      // 弹簧（沿调用边）
+      for (const e of view.edges) {
+        const a = pos.get(e.source), b = pos.get(e.target);
+        if (!a || !b) continue;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const d = Math.max(Math.sqrt(dx * dx + dy * dy), 0.01);
+        const f = (d - (e.self_loop ? 0 : LEN)) * SPRING;
+        const ux = dx / d, uy = dy / d;
+        a.vx += ux * f; a.vy += uy * f;
+        b.vx -= ux * f; b.vy -= uy * f;
+      }
+      // 向心 + 位移
+      for (const id of ids) {
+        const p = pos.get(id);
+        p.vx += (W / 2 - p.x) * GRAV;
+        p.vy += (H / 2 - p.y) * GRAV;
+        p.vx *= 0.82; p.vy *= 0.82;
+        if (p.fx == null) { p.x += p.vx; p.y += p.vy; }
+        else { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }
+        p.x = Math.max(30, Math.min(W - 30, p.x));
+        p.y = Math.max(30, Math.min(H - 30, p.y));
+      }
+    }
+    return { pos, W, H };
+  }
+
+  /* ------------------------------------------------------------
+   * 渲染
+   * ------------------------------------------------------------ */
+  function layoutAndRender() {
+    applyFilters();
+    const { pos, W, H } = simulate();
+    currentPos = pos;
+    renderSvg(W, H);
+    renderStats();
+    renderNodeList();
+    renderDetail(selectedId);
+    fitCamera(W, H);
+  }
+
+  function el(name, attrs) {
+    const e = document.createElementNS(SVGNS, name);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+
+  function radius(n) { return R[n.kind] || 24; }
+
+  function renderSvg(W, H) {
+    svg.innerHTML = "";
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("width", W);
+    svg.setAttribute("height", H);
+
+    const wrapG = el("g", { class: "camera" });
+    edgeLayerEl = el("g", { class: "edges" });
+    const nodeLayer = el("g", { class: "nodes" });
+    wrapG.appendChild(edgeLayerEl);
+    wrapG.appendChild(nodeLayer);
+    svg.appendChild(wrapG);
+
+    const reversePairs = new Set();
+    for (const e of view.edges) {
+      if (view.edges.some((o) => o.source === e.target && o.target === e.source && !o.self_loop)) {
+        reversePairs.add(e.source + ">" + e.target);
+      }
+    }
+    edgeLayerEl._reverse = reversePairs;
+    redrawEdges();
+    for (const n of view.nodes) drawNode(nodeLayer, n, currentPos.get(n.id));
+
+    applyCamera(wrapG, W, H);
+    svg._cameraG = wrapG;
+    svg._world = { W, H };
+    highlight();
+  }
+
+  function redrawEdges() {
+    if (!edgeLayerEl || !edgeLayerEl._reverse) return;
+    edgeLayerEl.innerHTML = "";
+    for (const e of view.edges) {
+      drawEdge(edgeLayerEl, e, currentPos, edgeLayerEl._reverse.has(e.source + ">" + e.target));
+    }
+  }
+
+  function drawEdge(layer, e, pos, curved) {
+    const a = pos.get(e.source), b = pos.get(e.target);
+    if (!a || !b) return;
+    const cls = ["cg-edge"];
+    if (e.self_loop) cls.push("loop");
+    if (e.in_cycle) cls.push("cycle");
+    const tagEdge = (node) => node.setAttribute("data-edge", e.source + ">" + e.target);
+    if (e.self_loop) {
+      // 自环：节点右上方的小环
+      const r = radius(view.byId.get(e.source));
+      const cx = a.x, cy = a.y;
+      const d = `M ${cx + r * 0.75} ${cy - r * 0.65}
+                 C ${cx + r + 26} ${cy - r - 30}, ${cx + r + 26} ${cy + r + 14},
+                   ${cx + r * 0.7} ${cy + r * 0.72}`;
+      const path = el("path", { d, class: cls.join(" "), fill: "none" });
+      tagEdge(path);
+      path.addEventListener("click", (ev) => { ev.stopPropagation(); selectNode(e.source); });
+      layer.appendChild(path);
+      // 箭头
+      const ah = arrowHead(cx + r * 0.7, cy + r * 0.72, Math.PI * 0.72, e);
+      tagEdge(ah);
+      layer.appendChild(ah);
+      return;
+    }
+    let dx = b.x - a.x, dy = b.y - a.y;
+    const d = Math.max(Math.hypot(dx, dy), 0.01);
+    const ux = dx / d, uy = dy / d;
+    const ra = radius(view.byId.get(e.source)), rb = radius(view.byId.get(e.target));
+    const x1 = a.x + ux * ra, y1 = a.y + uy * ra;
+    const x2 = b.x - ux * rb, y2 = b.y - uy * rb;
+
+    let path;
+    let endAngle = Math.atan2(uy, ux);
+    if (curved) {
+      // 双向边：向一侧弯，避免与反向边重叠
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      const off = 26;
+      const qx = mx - uy * off, qy = my + ux * off;
+      path = el("path", { d: `M ${x1} ${y1} Q ${qx} ${qy} ${x2} ${y2}`,
+                          class: cls.join(" "), fill: "none" });
+      // 箭头沿曲线末端方向
+      endAngle = Math.atan2(y2 - qy, x2 - qx);
+    } else {
+      path = el("path", { d: `M ${x1} ${y1} L ${x2} ${y2}`, class: cls.join(" "), fill: "none" });
+    }
+    tagEdge(path);
+    const ah = arrowHead(x2, y2, endAngle, e);
+    tagEdge(ah);
+    layer.appendChild(ah);
+    if (e.calls.length > 1) {
+      const tag = el("text", { x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 4,
+                               class: "cg-edge-count", "text-anchor": "middle" });
+      tag.textContent = "×" + e.calls.length;
+      tagEdge(tag);
+      layer.appendChild(tag);
+    }
+    path.addEventListener("click", (ev) => { ev.stopPropagation(); selectNode(e.source); });
+    layer.appendChild(path);
+  }
+
+  function arrowHead(x, y, angle, e) {
+    const s = 8;
+    const p1 = [x, y];
+    const p2 = [x - Math.cos(angle - 0.42) * s, y - Math.sin(angle - 0.42) * s];
+    const p3 = [x - Math.cos(angle + 0.42) * s, y - Math.sin(angle + 0.42) * s];
+    const cls = "cg-arrow" + (e.self_loop ? " loop" : e.in_cycle ? " cycle" : "");
+    return el("polygon", { points: `${p1[0]},${p1[1]} ${p2[0]},${p2[1]} ${p3[0]},${p3[1]}`, class: cls });
+  }
+
+  function drawNode(layer, n, p) {
+    if (!p) return;
+    const r = radius(n);
+    const g = el("g", { class: "cg-node", transform: `translate(${p.x},${p.y})`, "data-id": n.id });
+
+    const circleCls = ["cg-circle", n.kind];
+    if (n.uncalled) circleCls.push("uncalled");
+    g.appendChild(el("circle", { r, class: circleCls.join(" ") }));
+
+    if (n.self_recursive || n.mutually_recursive) {
+      const t = el("text", { x: r - 4, y: -r + 6, class: "cg-rec", "text-anchor": "middle" });
+      t.textContent = "🔄";
+      g.appendChild(t);
+    }
+
+    const label = el("text", { y: 4, class: "cg-node-label", "text-anchor": "middle" });
+    const display = n.kind === "main" ? "main" : n.name;
+    label.textContent = display.length > 7 ? display.slice(0, 6) + "…" : display;
+    g.appendChild(label);
+
+    const sub = el("text", { y: r + 15, class: "cg-node-sub", "text-anchor": "middle" });
+    sub.textContent = n.kind === "user"
+      ? `(${n.arity} 参)${n.uncalled ? " · 未调用" : ""}`
+      : n.kind === "builtin" ? "内置" : "顶层语句";
+    g.appendChild(sub);
+
+    g.addEventListener("click", (ev) => { ev.stopPropagation(); selectNode(n.id); });
+    makeDraggable(g, n);
+    layer.appendChild(g);
+  }
+
+  /* ------------------------------------------------------------
+   * 节点选中高亮
+   * ------------------------------------------------------------ */
+  function selectNode(id) {
+    selectedId = selectedId === id ? null : id;
+    highlight();
+    renderDetail(selectedId);
+  }
+  svg.addEventListener("click", () => { selectedId = null; highlight(); renderDetail(null); });
+
+  function highlight() {
+    if (!graph) return;
+    const related = new Set();
+    const activeEdges = new Set();
+    if (selectedId) {
+      related.add(selectedId);
+      for (const e of graph.edges) {
+        if (e.source === selectedId || e.target === selectedId) {
+          related.add(e.source); related.add(e.target);
+          activeEdges.add(e.source + ">" + e.target);
+        }
+      }
+    }
+    svg.querySelectorAll(".cg-node").forEach((g) => {
+      const on = !selectedId || related.has(g.getAttribute("data-id"));
+      g.classList.toggle("dim", !on);
+      g.classList.toggle("selected", g.getAttribute("data-id") === selectedId);
+    });
+    svg.querySelectorAll("[data-edge]").forEach((x) => {
+      x.classList.toggle("dim", !!selectedId && !activeEdges.has(x.getAttribute("data-edge")));
+    });
+  }
+
+  /* ------------------------------------------------------------
+   * 拖拽节点
+   * ------------------------------------------------------------ */
+  function makeDraggable(g, n) {
+    let dragging = false;
+    g.addEventListener("mousedown", (ev) => {
+      ev.stopPropagation();
+      dragging = true;
+      const p = currentPos.get(n.id);
+      const start = clientToSvg(ev.clientX, ev.clientY);
+      const ox = p.x - start.x, oy = p.y - start.y;
+      const move = (mv) => {
+        if (!dragging) return;
+        const pt = clientToSvg(mv.clientX, mv.clientY);
+        p.x = Math.max(30, Math.min(svg._world.W - 30, pt.x + ox));
+        p.y = Math.max(30, Math.min(svg._world.H - 30, pt.y + oy));
+        g.setAttribute("transform", `translate(${p.x},${p.y})`);
+        redrawEdges();
+      };
+      const up = () => {
+        dragging = false;
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+        highlight();
+      };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+    });
+  }
+
+  function clientToSvg(cx, cy) {
+    const rect = svg.getBoundingClientRect();
+    const vb = svg.viewBox.baseVal;
+    // 屏幕 -> viewBox 坐标，再扣除相机平移/缩放，得到世界坐标
+    const sx = ((cx - rect.left) / rect.width) * vb.width;
+    const sy = ((cy - rect.top) / rect.height) * vb.height;
+    return { x: (sx - camera.x) / camera.k, y: (sy - camera.y) / camera.k };
+  }
+
+  /* ------------------------------------------------------------
+   * 相机：缩放 / 平移 / 适配
+   * ------------------------------------------------------------ */
+  function applyCamera(g, W, H) {
+    if (!g) return;
+    g.setAttribute("transform", `translate(${camera.x},${camera.y}) scale(${camera.k})`);
+  }
+  function fitCamera(W, H) {
+    camera.x = 0; camera.y = 0; camera.k = 1;
+    const g = svg._cameraG;
+    if (g) applyCamera(g, W, H);
+  }
+  document.getElementById("zoom-in").onclick = () => { camera.k = Math.min(2.5, camera.k * 1.2); applyCamera(svg._cameraG); };
+  document.getElementById("zoom-out").onclick = () => { camera.k = Math.max(0.4, camera.k / 1.2); applyCamera(svg._cameraG); };
+  document.getElementById("zoom-fit").onclick = () => fitCamera(svg._world.W, svg._world.H);
+
+  let panning = false, panStart = null;
+  svg.addEventListener("mousedown", (ev) => {
+    if (ev.target.closest(".cg-node")) return;
+    panning = true;
+    panStart = { x: ev.clientX, y: ev.clientY, cx: camera.x, cy: camera.y };
+  });
+  window.addEventListener("mousemove", (ev) => {
+    if (!panning) return;
+    const scale = svg.viewBox.baseVal.width / Math.max(wrap.clientWidth, 1);
+    camera.x = panStart.cx + (ev.clientX - panStart.x) * scale;
+    camera.y = panStart.cy + (ev.clientY - panStart.y) * scale;
+    applyCamera(svg._cameraG);
+  });
+  window.addEventListener("mouseup", () => { panning = false; });
+  svg.addEventListener("wheel", (ev) => {
+    if (!svg._cameraG) return;
+    ev.preventDefault();
+    const f = ev.deltaY < 0 ? 1.1 : 1 / 1.1;
+    camera.k = Math.max(0.4, Math.min(2.5, camera.k * f));
+    applyCamera(svg._cameraG);
+  }, { passive: false });
+
+  /* ------------------------------------------------------------
+   * 统计 / 节点列表 / 调用点明细
+   * ------------------------------------------------------------ */
+  function renderStats() {
+    const s = graph.stats;
+    const parts = [
+      `${s.user_count} 个用户函数`,
+      `${s.builtin_count} 个内置函数`,
+      `${s.edge_count} 条调用边`,
+    ];
+    if (s.recursive_count) parts.push(`<span style="color:var(--warning)">${s.recursive_count} 个递归函数</span>`);
+    if (s.uncalled_count) parts.push(`<span style="color:var(--danger)">${s.uncalled_count} 个未被调用</span>`);
+    if (s.unresolved_count) parts.push(`<span style="color:var(--warning)">${s.unresolved_count} 个未解析调用</span>`);
+    document.getElementById("cg-stats").innerHTML = parts.join(" · ");
+  }
+
+  function renderNodeList() {
+    const box = document.getElementById("cg-nodes");
+    document.getElementById("node-count").textContent = `（${view.nodes.length}）`;
+    if (!view.nodes.length) { box.innerHTML = ML.empty("暂无节点"); return; }
+    box.innerHTML = view.nodes.map((n) => {
+      const badges = [];
+      badges.push(ML.badge(KIND_LABEL[n.kind], n.kind === "user" ? "purple" : n.kind === "builtin" ? "green" : "gray"));
+      if (n.self_recursive) badges.push(ML.badge("直接递归", "red"));
+      if (n.mutually_recursive) badges.push(ML.badge("间接递归", "amber"));
+      if (n.uncalled) badges.push(ML.badge("从未被调用", "red"));
+      const loc = n.line ? `L${n.line}` : "";
+      return `<div class="cg-node-row${n.uncalled ? " uncalled" : ""}" data-id="${esc(n.id)}">
+        <span class="cg-dot ${n.kind}${n.uncalled ? " uncalled" : ""}"></span>
+        <span class="cg-name">${esc(n.kind === "main" ? "main（顶层入口）" : n.name)}</span>
+        ${badges.join("")}
+        <span class="muted" style="font-size:11px;margin-left:auto">入 ${n.in_degree} · 出 ${n.out_degree} ${loc}</span>
+      </div>`;
+    }).join("");
+    box.querySelectorAll(".cg-node-row").forEach((row) => {
+      row.addEventListener("click", () => selectNode(row.getAttribute("data-id")));
+    });
+  }
+
+  function renderDetail(id) {
+    const box = document.getElementById("cg-detail");
+    let html = "";
+    if (id && view.byId.has(id)) {
+      const n = view.byId.get(id);
+      const outs = graph.edges.filter((e) => e.source === id);
+      const ins = graph.edges.filter((e) => e.target === id && e.source !== id);
+      html += `<div style="margin-bottom:8px;color:var(--text)">
+        <b>${esc(n.kind === "main" ? "main（顶层入口）" : n.name)}</b>
+        ${ML.badge(KIND_LABEL[n.kind], n.kind === "user" ? "purple" : n.kind === "builtin" ? "green" : "gray")}
+        ${n.line ? `<span class="muted" style="font-size:12px">定义于 L${n.line}:C${n.column}</span>` : ""}
+      </div>`;
+      html += `<div class="cg-sub">调用了 ${outs.length} 个目标：</div>`;
+      html += outs.length ? outs.map((e) => edgeHtml(e, false)).join("") : `<div class="muted cg-indent">（无）</div>`;
+      html += `<div class="cg-sub" style="margin-top:8px">被 ${ins.length} 处调用：</div>`;
+      html += ins.length ? ins.map((e) => edgeHtml(e, true)).join("") : `<div class="muted cg-indent">（无）</div>`;
+    } else {
+      const u = graph.unresolved || [];
+      if (u.length) {
+        html += `<div style="color:var(--warning);margin-bottom:6px">⚠️ ${u.length} 处调用无法静态解析（未连成边）：</div>`;
+        html += u.map((c) => `<div class="cg-unresolved">
+          <span class="mono">${esc(c.name)}</span>
+          <span class="muted">L${c.line}:C${c.column}</span>
+          <span>${esc(c.reason)}</span></div>`).join("");
+      } else {
+        html = `<span class="muted">点击图中的函数节点，查看它的出边与每个调用点位置。</span>`;
+      }
+    }
+    box.innerHTML = html;
+  }
+
+  function edgeHtml(e, incoming) {
+    const other = incoming ? e.source : e.target;
+    const n = graph.nodes.find((x) => x.id === other);
+    const name = n ? (n.kind === "main" ? "main" : n.name) : other;
+    const sites = e.calls.map((c) => `L${c.line}:C${c.column}`).join("，");
+    const flag = e.self_loop ? ML.badge("自环·递归", "red")
+      : e.in_cycle ? ML.badge("环边·间接递归", "amber") : "";
+    return `<div class="cg-edge-row">
+      <span class="muted">${incoming ? "←" : "→"}</span>
+      <span class="mono cg-edge-name" data-id="${esc(other)}" style="cursor:pointer;color:var(--primary)">${esc(name)}</span>
+      ${flag}
+      <span class="muted" style="font-size:11px">${esc(sites)}${e.calls.length > 1 ? `（${e.calls.length} 处）` : ""}</span>
+    </div>`;
+  }
+
+  document.getElementById("cg-detail").addEventListener("click", (ev) => {
+    const t = ev.target.closest(".cg-edge-name");
+    if (t && view.byId.has(t.getAttribute("data-id"))) selectNode(t.getAttribute("data-id"));
+  });
+
+  // 初次进入若草稿非空不自动请求，保持与其它页面一致
+})();
+</script>
+</body>
+</html>

@@ -151,6 +151,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/compile" and method == "POST":
             view = svc.compile_view(body.get("source", ""), body.get("detail", "all"))
             return self._json(200, {"ok": True, "result": view})
+        if path == "/api/callgraph" and method == "POST":
+            graph = svc.call_graph(body.get("source", ""))
+            return self._json(200, {"ok": True, "graph": graph})
         if path == "/api/run" and method == "POST":
             opts = body.get("options", {})
             if isinstance(opts, dict) and isinstance(opts.get("sample_interval_ms"), (int, float)):

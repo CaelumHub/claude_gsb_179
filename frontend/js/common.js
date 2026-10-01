@@ -16,6 +16,7 @@
     { key: "editor",      href: "editor.html",      icon: "✏️", title: "代码编辑器",      group: "开发" },
     { key: "ast",         href: "ast.html",         icon: "🌳", title: "AST 语法树可视化", group: "编译前端" },
     { key: "symbols",     href: "symbols.html",     icon: "🏷️", title: "符号表与作用域",  group: "编译前端" },
+    { key: "callgraph",   href: "callgraph.html",   icon: "🕸️", title: "函数调用图",      group: "编译前端" },
     { key: "bytecode",    href: "bytecode.html",    icon: "🧩", title: "字节码 / 中间代码", group: "编译前端" },
     { key: "debug",       href: "debug.html",       icon: "🐞", title: "执行跟踪与单步调试", group: "运行调试" },
     { key: "callstack",   href: "callstack.html",   icon: "📚", title: "调用栈与变量监视", group: "运行调试" },
@@ -73,6 +74,29 @@
         "    return a;",
         "}",
         "print(bubble([5, 3, 8, 1, 9, 2]));",
+      ].join("\n"),
+    },
+    {
+      name: "调用图：递归 / 间接调用 / 未调用",
+      code: [
+        "// fib 直接递归；isEven / isOdd 互相调用；unused 从未被调用",
+        "func fib(n) {",
+        "    if (n < 2) { return n; }",
+        "    return fib(n - 1) + fib(n - 2);",
+        "}",
+        "func isEven(n) {",
+        "    if (n == 0) { return 1; }",
+        "    return isOdd(n - 1);",
+        "}",
+        "func isOdd(n) {",
+        "    if (n == 0) { return 0; }",
+        "    return isEven(n - 1);",
+        "}",
+        "func unused(x) {",
+        "    return x * 2;",
+        "}",
+        "print(fib(8));",
+        "print(isEven(10));",
       ].join("\n"),
     },
     {
@@ -141,6 +165,7 @@
 
     // ---- 编译 / 运行 ----
     compile(source, detail) { return this.post("/api/compile", { source, detail: detail || "all" }); },
+    callGraph(source) { return this.post("/api/callgraph", { source }); },
     run(source, options) { return this.post("/api/run", { source, options: options || {} }); },
 
     // ---- 调试 ----

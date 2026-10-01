@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 from . import config
 from . import storage
 from . import compiler as compiler_mod
+from . import callgraph as callgraph_mod
 from . import vm as vm_mod
 from . import debugger as debugger_mod
 from . import profiler as profiler_mod
@@ -248,6 +249,13 @@ class Service:
             view["bytecode"] = result.bytecode.to_dict()
             view["bytecode"]["functions"].reverse()
         return view
+
+    # ==================================================================
+    # 函数调用图
+    # ==================================================================
+    def call_graph(self, source):
+        """基于语义分析的目标解析结果构建函数调用图。"""
+        return callgraph_mod.build_call_graph(source)
 
     # ==================================================================
     # 运行（普通 / 性能剖析）

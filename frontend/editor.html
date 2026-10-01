@@ -90,6 +90,7 @@
     ];
     if (r.has_ast) badges.push(`<a href="ast.html">🌳 AST</a>`);
     if (r.has_symbols) badges.push(`<a href="symbols.html">🏷️ 符号表</a>`);
+    if (r.has_ast) badges.push(`<a href="callgraph.html">🕸️ 调用图</a>`);
     if (r.has_bytecode) badges.push(`<a href="bytecode.html">🧩 字节码</a>`);
     status.innerHTML = badges.join("");
     document.getElementById("diags").innerHTML = ML.renderDiagnostics(r.diagnostics, code);
